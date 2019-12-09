@@ -11,6 +11,10 @@ library(tidyverse)
 library(dbplyr)
 library(RSQLite)
 library(config)
+library(furrr)
+
+
+plan(multisession)
 ```
 
 
@@ -52,11 +56,11 @@ for chr in $(seq 1 22); do awk -v chrom=$chr 'OFS="\t" {print chrom":"$3"_"$4"_"
 Load markers
 ```{r}
 load_markers <- function(chrom) {
-  markers <- vroom::vroom(file = path("~/data/ukbb500k_gwas/db_load/",paste0("marker_ids_chr",chrom,".txt")), col_names = c("kgp_id","snp","chr","pos","ref","alt"))
+  markers <- vroom::vroom(file = path(prefix,"db_load",paste0("marker_ids_chr",chrom,".txt")), col_names = c("kgp_id","snp","chr","pos","ref","alt"))
   # load into b37 table
   markers %>% select(kgp_id, chr,pos, ref, alt) %>% DBI::dbWriteTable(conn = con, name = "b37", value = ., append = TRUE)
   # load into marker table
-  markers %>%   filter(str_detect(snp, pattern = "[0-9]+:[0-9]+_[A-Z]+_[A-Z]", negate = TRUE)) %>% select(kgp_id, marker_name = snp) %>% distinct() %>% DBI::dbWriteTable(conn = con, name = "marker", value = ., append = TRUE)
+  markers %>% filter(str_detect(snp, pattern = "[0-9]+:[0-9]+_[A-Z]+_[A-Z]", negate = TRUE)) %>% select(kgp_id, marker_name = snp) %>% distinct() %>% DBI::dbWriteTable(conn = con, name = "marker", value = ., append = TRUE)
   
 }
 ```
@@ -72,6 +76,8 @@ map(chrs, load_markers)
 
 ## Load study info
 
+Create a tibble for the different gwases with the extra information
+
 ```{r}
 study_info <- tribble(~name, ~ancestry, ~model_formula, ~gwas_date, ~n, ~n_case, ~n_control, ~imputed, ~impute_ref_panel, ~summary_only, ~citation, ~url, ~xsan_path, ~comment,
                       "ukbb_gout", "European", "gout ~ age + sex + PC1:40", "2019-08-01", 332370, 7131, 325239, TRUE, "HRC + 1KGP", FALSE, "", "", "","plink options: --logistic sex --freq case-control --geno 0.1 --missing --ci 0.95 --maf 0.0001 --hwe 0.000001 --hardy --covar gout_gwas_covar.covar --covar-name Age,pc1-pc40, plink version: v1.90b6.10 64-bit (17 Jun 2019)",
@@ -82,7 +88,7 @@ study_info <- tribble(~name, ~ancestry, ~model_formula, ~gwas_date, ~n, ~n_case,
                       )
 ```
 
-
+Load the study info into the database
 ```{r}
 study_info %>% DBI::dbWriteTable(con, "study", value = ., append = TRUE)
 ```
@@ -90,7 +96,9 @@ study_info %>% DBI::dbWriteTable(con, "study", value = ., append = TRUE)
 
 ## Load in the gwas results
 
+
 ```{r}
+# A function that will calculate the MAF from the geno column
 maf_calc <- function(geno) {
   counts <- str_split(geno, "/") %>% unlist() %>% map_dbl(as.numeric)
   af <- (counts[2] + 2 * counts[1])/(2*sum(counts))
@@ -103,25 +111,27 @@ Function to load the gwas and frequency/hwe data in. SNPs get filtered if info s
 ```{r}
 pivot_hwe <- function(chunk, pos){
    wide <- chunk %>% janitor::clean_names() %>% 
-    mutate(maf = map_dbl(geno, maf_calc)) %>% # calculate allele frequencies
+    mutate(maf = furrr::future_map_dbl(geno, maf_calc)) %>% # calculate allele frequencies
     pivot_wider(values_from = c(geno,o_het,e_het,p, maf), names_from = test)
    wide
    #write_tsv(wide, path("~/data/ukbb500k_gwas/chr22_wide.hwe.tsv"), append = TRUE, col_names = TRUE)
 }
 
 
-load_gwas <- function(chr, studyid) {
+wrangle_gwas_data <- function(chr, studyid, ukbb_dir) {
   # read gwas
-  gwas <- read_tsv(path("~/data/ukbb500k_gwas/",paste0("gout_gwas_chr",chr,"_add_unfiltered_p.tsv"))) %>% janitor::clean_names()
+  gwas <- read_tsv(path(prefix,ukbb_dir,paste0("gout_gwas_chr",chr,"_add_unfiltered_p.tsv"))) %>% janitor::clean_names()
   
   # read impute marker info
-  impute_info <- vroom::vroom(path("~/data/ukbb500k_gwas/",paste0("ukb_mfi_chr",chr,"_v3.txt")), col_names = c("chr_pos_alleles","snp_id", "position", "ref","alt","maf", "a1","info_score")) %>% mutate(remove_snp = ifelse(info_score < 0.3, TRUE, FALSE))
+  impute_info <- vroom::vroom(path(prefix,"markers",paste0("ukb_mfi_chr",chr,"_v3.txt")), col_names = c("chr_pos_alleles","snp_id", "position", "ref","alt","maf", "a1","info_score")) %>% mutate(remove_snp = ifelse(info_score < 0.3, TRUE, FALSE))
   
   # read hwe info
   message("pivoting")
   # pivot wide
-  wide_hwe <- read_tsv_chunked(path("~/data/ukbb500k_gwas/",paste0("chr",chr,".hwe.tsv")), callback = DataFrameCallback$new(pivot_hwe), chunk_size = 90000, progress = TRUE) 
+  wide_hwe <- read_tsv_chunked(path(prefix,ukbb_dir,paste0("chr",chr,".hwe.tsv")), callback = DataFrameCallback$new(pivot_hwe), chunk_size = 90000, progress = TRUE) 
 
+  
+  
   
   # filter to only have complete data bsaed on gwas and hwe
   res_wide <- gwas %>% filter(snp %in% wide_hwe$snp) %>% left_join(., wide_hwe, by = c("chr","snp", "a1"))
@@ -134,7 +144,8 @@ load_gwas <- function(chr, studyid) {
   gwas_hwe_info %>% filter(remove_snp == TRUE ) %>% 
     mutate(study_id = studyid) %>% 
     select(kgp_id = chr_pos_alleles, study_id) %>% 
-    DBI::dbWriteTable(con, name = "qc_removed", value = ., append = TRUE)
+    write_csv(path(prefix,"db_load",paste0("chr",chr,"_studyid",studyid,"_qc_removed.csv")))
+    #DBI::dbWriteTable(con, name = "qc_removed", value = ., append = TRUE)
   
   message("Beginning data load in db")
   # load data into gwas table
@@ -156,54 +167,78 @@ load_gwas <- function(chr, studyid) {
            hwe_p_all = p_ALL, 
            hwe_p_aff = p_AFF, 
            hwe_p_unaff = p_UNAFF ) %>% 
-    DBI::dbWriteTable(con, name = "gwas", value = ., append = TRUE)
+    write_csv(prefix("db_load",paste0("chr",chr,"_studyid",studyid,"_gwas.csv")))
+    #DBI::dbWriteTable(con, name = "gwas", value = ., append = TRUE)
 }
 
 
+load_gwas_table <- function(chr, studyid) {
+  read_csv(path(prefix,"db_load",paste0("chr",chr,"_studyid",studyid,"_gwas.csv"))) %>% 
+  DBI::dbWriteTable(con, name = "gwas", value = ., append = TRUE)
+}
+
+load_qc_table <- function(chr, studyid){
+  read_csv(path(prefix,"db_load",paste0("chr",chr,"_studyid",studyid,"_qc_removed.csv"))) %>% 
+  DBI::dbWriteTable(con, name = "qc_removed", value = ., append = TRUE)
+}
 
 ```
 
 
+Wrangle the data into the table formats
 ```{r}
-map(chrs, load_gwas, studyid = 1)
+crossing(studyid = c(1,2,3), dir = ukbb_dirs)
+map(chrs, wrangle_gwas_data, studyid = 1, ukbb_dir = "test_db/gout")
+```
+
+load the gwas table with data
+```{r}
+map(chrs, load_gwas_table, studyid = 1)
+```
+
+load the qc table with data
+```{r}
+map(chrs, load_qc_table, studyid = 1)
 ```
 
 
-```{r}
+### Dev commands
+
+```{r, eval = FALSE}
 gwas <- read_tsv("~/data/ukbb500k_gwas/gout_gwas_chr22_add_unfiltered_p.tsv") %>% janitor::clean_names()
 ```
 
 load impute marker info
-```{r}
+```{r, eval = FALSE}
 impute_info <- vroom::vroom("~/data/ukbb500k_gwas/ukb_mfi_chr22_v3.txt", col_names = c("chr_pos_alleles","snp_id", "position", "ref","alt","maf", "a1","info_score")) %>% mutate(remove_snp = ifelse(info_score <= 0.3, TRUE, FALSE))
 ```
 
 Load in the hwe
-```{r}
+```{r, eval = FALSE}
 hwe <- vroom::vroom("~/data/ukbb500k_gwas/chr22.hwe.tsv", n_max = 100000) %>% janitor::clean_names()
 ```
 
 
 
 Use pivot wider to reduce down to one row per snp
-```{r}
+```{r, eval = FALSE}
 wide_hwe <- hwe %>% 
   mutate(maf = map_dbl(geno, maf_calc)) %>% # calculate allele frequencies
   pivot_wider(values_from = c(geno,o_het,e_het,p, maf), names_from = test)
 ```
 
 
-```{r}
+```{r, eval = FALSE}
 res_wide <- gwas %>% filter(snp %in% wide_hwe$snp) %>% left_join(., wide_hwe, by = c("chr","snp", "a1"))
 ```
 
-```{r}
+```{r, eval = FALSE}
 gwas_hwe_info <- impute_info %>% unite("snp", snp_id, chr_pos_alleles, sep = ",", remove = FALSE) %>% select(-maf, -a1) %>% right_join(res_wide, by = "snp")
 ```
 
 
 
-```{r}
+```{r, eval = FALSE}
 # fill in qc_removed table
 gwas_hwe_info %>% filter(remove_snp == TRUE ) %>% mutate(study_id = 1) %>% select(kgp_id = chr_pos_alleles, study_id)%>% DBI::dbWriteTable(con, name = "qc_removed", value = ., append = TRUE)
 
@@ -216,15 +251,15 @@ gwas_hwe_info %>% head() %>%
 
 
 
-
-```{r}
+fill in the markers table
+```{r, eval = FALSE}
 markers %>% select(kgp_id, chr,pos, ref, alt) %>% DBI::dbWriteTable(conn = con, name = "b37", value = ., append = FALSE, overwrite = TRUE)
 markers %>%  select(kgp_id, snp) %>% distinct() %>% filter(str_detect(snp, pattern = "rs", negate = TRUE)) %>% filter(str_detect(snp, "^[1-9]", negate = TRUE))
 ```
 
 
 
-```{r}
+```{r, eval = FALSE}
 DBI::dbReadTable(con, "b37")
 ```
 
