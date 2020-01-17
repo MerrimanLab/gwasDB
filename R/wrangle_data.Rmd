@@ -28,20 +28,25 @@ con <- dbConnect(odbc::odbc(),driver = conf$driver, database = conf$database , t
 File locations for ukbb results
 ```{r}
 if(file.exists("/Volumes/")){
-  prefix <- path("/Volumes/scratch/merrimanlab/ukbio/EGAD00010001474/splits/GWAS_results")
+  prefix <- path("/Volumes/scratch/merrimanlab/murray/gwasDB/data/")
 } else {
   prefix <- path("~/data/ukbb500k_gwas/")
 }
 
-ukbb_dirs <- list(
-  gout = path(prefix, "gout")
+ukbb_dirs <- tribble(~ name, ~path,
+  "ukbb_gout",  path(prefix,"source_data", "gout"),
+  "ukbb_gout_male" , path(prefix,"source_data", "gout_male"),
+  "ukbb_gout_female" , path(prefix,"source_data", "gout_female"),
+  "ukbb_gout_hu" , path(prefix,"source_data", "gout_hu"),
+  "ukbb_gout_hu_male" , path(prefix,"source_data", "gout_hu_male"),
+  "ukbb_gout_hu_female" , path(prefix,"source_data", "gout_hu_female")
 )
 ```
 
 
 
 ```{r}
-chrs <- 22L
+chrs <- 1L:22L
 ```
 
 
@@ -83,14 +88,16 @@ study_info <- tribble(~name, ~ancestry, ~model_formula, ~gwas_date, ~n, ~n_case,
                       "ukbb_gout", "European", "gout ~ age + sex + PC1:40", "2019-08-01", 332370, 7131, 325239, TRUE, "HRC + 1KGP", FALSE, "", "", "","plink options: --logistic sex --freq case-control --geno 0.1 --missing --ci 0.95 --maf 0.0001 --hwe 0.000001 --hardy --covar gout_gwas_covar.covar --covar-name Age,pc1-pc40, plink version: v1.90b6.10 64-bit (17 Jun 2019)",
                       "ukbb_gout_male", "European", "gout ~ age + PC1:40", "2019-08-01", 159361, 6584, 152777, TRUE, "HRC + 1KGP",FALSE, "", "", "", "plink options: --ci 0.95 --covar gout_gwas_covar.covar --covar-name Age,pc1-pc40 --freq case-control --geno 0.1 --hardy --hwe 0.000001 --logistic --maf 0.0001, plink version: v1.90b6.10 64-bit (17 Jun 2019)",
                       "ukbb_gout_female", "European","gout ~ age + PC1:40", "2019-08-01", 173009, 547, 172462, TRUE, "HRC + 1KGP", FALSE, "", "", "", "plink options: --ci 0.95 --covar gout_gwas_covar.covar --covar-name Age,pc1-pc40 --freq case-control --geno 0.1 --hardy --hwe 0.000001 --logistic --maf 0.0001, plink version: v1.90b6.10 64-bit (17 Jun 2019)",
-                      "ukbb_gout_hu", "European","gout_hu ~ age + sex + PC1:40","2019-08-01", NA, 7131, 27018, TRUE, "HRC + 1KGP", FALSE, "","","" ,"plink options: --ci 0.95 --covar gwas_covar.covar --covar-name Age,pc1-pc40 --freq case-control --geno 0.1 --hardy --hwe 0.000001 --logistic sex --maf 0.0001, plink version: v1.90b6.10 64-bit (17 Jun 2019)",
-                      "ukbb_gout_hu_male", "European", "gout_hu ~ age + PC1:40", "2019-08-01", NA, 6584, 23159, TRUE, "HRC + 1KGP", FALSE, "", "", "", "plink options: --ci 0.95 --covar gwas_covar.covar --covar-name Age,pc1-pc40 --freq case-control --geno 0.1 --hardy --hwe 0.000001 --logistic --maf 0.0001, plink version: v1.90b6.10 64-bit (17 Jun 2019)"
+                      "ukbb_gout_hu", "European","gout_hu ~ age + sex + PC1:40","2019-08-01", 34149, 7131, 27018, TRUE, "HRC + 1KGP", FALSE, "","","" ,"plink options: --ci 0.95 --covar gwas_covar.covar --covar-name Age,pc1-pc40 --freq case-control --geno 0.1 --hardy --hwe 0.000001 --logistic sex --maf 0.0001, plink version: v1.90b6.10 64-bit (17 Jun 2019)",
+                      "ukbb_gout_hu_male", "European", "gout_hu ~ age + PC1:40", "2019-08-01", 29743, 6584, 23159, TRUE, "HRC + 1KGP", FALSE, "", "", "", "plink options: --ci 0.95 --covar gwas_covar.covar --covar-name Age,pc1-pc40 --freq case-control --geno 0.1 --hardy --hwe 0.000001 --logistic --maf 0.0001, plink version: v1.90b6.10 64-bit (17 Jun 2019)",
+                      "ukbb_gout_hu_female", "European", "gout_hu ~ age + PC1:40", "2019-08-01", 4406, 547, 3859, TRUE, "HRC + 1KGP", FALSE, "", "", "", "plink options: --ci 0.95 --covar gwas_covar.covar --covar-name Age,pc1-pc40 --freq case-control --geno 0.1 --hardy --hwe 0.000001 --logistic --maf 0.0001, plink version: v1.90b6.10 64-bit (17 Jun 2019)"
                       )
 ```
 
 Load the study info into the database
 ```{r}
 study_info %>% DBI::dbWriteTable(con, "study", value = ., append = TRUE)
+study_info <- DBI::dbReadTable(con, "study")
 ```
 
 
@@ -112,15 +119,21 @@ Function to load the gwas and frequency/hwe data in. SNPs get filtered if info s
 pivot_hwe <- function(chunk, pos){
    wide <- chunk %>% janitor::clean_names() %>% 
     mutate(maf = furrr::future_map_dbl(geno, maf_calc)) %>% # calculate allele frequencies
-    pivot_wider(values_from = c(geno,o_het,e_het,p, maf), names_from = test)
+    pivot_wider(values_from = c(geno,o_het,e_het,p, maf), names_from = test, id_cols = c(chr, snp, a1, a2))
    wide
    #write_tsv(wide, path("~/data/ukbb500k_gwas/chr22_wide.hwe.tsv"), append = TRUE, col_names = TRUE)
 }
 
-
+# load in the marker table from the DB and recreate the ref and alt columns so they can be used for the joins later on
+marker_table <- DBI::dbReadTable(con, "marker") %>% rename("kgp_id_marker_table" = kgp_id) %>% mutate(alt_marker_table = str_extract(kgp_id_marker_table, "_[ACGT]+$") %>% str_remove("_"), ref_marker_table = str_extract(kgp_id_marker_table, "_[ACGT]+_") %>% str_remove_all("_"))
 wrangle_gwas_data <- function(chr, studyid, ukbb_dir) {
+  padded_chr <- str_pad(chr, width=2, "left",pad ="0") # tsv files had a padded chr number
+
+  message(paste0("wrangling: chr",chr," studyid ",studyid, " dir:",ukbb_dir))
+  
   # read gwas
-  gwas <- read_tsv(path(prefix,ukbb_dir,paste0("gout_gwas_chr",chr,"_add_unfiltered_p.tsv"))) %>% janitor::clean_names()
+  gwas_prefix <- str_remove(study_info[study_info[["id"]] == studyid,][["name"]], "ukbb_")
+  gwas <- read_tsv(path(ukbb_dir,paste0(gwas_prefix,"_gwas_chr", padded_chr,"_add_unfiltered_p.tsv"))) %>% janitor::clean_names()
   
   # read impute marker info
   impute_info <- vroom::vroom(path(prefix,"markers",paste0("ukb_mfi_chr",chr,"_v3.txt")), col_names = c("chr_pos_alleles","snp_id", "position", "ref","alt","maf", "a1","info_score")) %>% mutate(remove_snp = ifelse(info_score < 0.3, TRUE, FALSE))
@@ -128,13 +141,16 @@ wrangle_gwas_data <- function(chr, studyid, ukbb_dir) {
   # read hwe info
   message("pivoting")
   # pivot wide
-  wide_hwe <- read_tsv_chunked(path(prefix,ukbb_dir,paste0("chr",chr,".hwe.tsv")), callback = DataFrameCallback$new(pivot_hwe), chunk_size = 90000, progress = TRUE) 
+  #wide_hwe <- read_tsv_chunked(path(ukbb_dir,paste0("chr",padded_chr ,".hwe.tsv")), callback = DataFrameCallback$new(pivot_hwe), chunk_size = 180000, progress = TRUE) 
 
+  hwe_all <- vroom::vroom(path(ukbb_dir,paste0("chr",padded_chr ,".hwe.tsv")), delim = "\t") %>% janitor::clean_names() %>% filter(test == "ALL", snp %in% gwas$snp) %>% mutate(maf = furrr::future_map_dbl(geno, maf_calc)) %>% select(chr, snp, a1, a2, "geno_all" = geno, "hwe_p_all" = p, "maf_all" = maf) %>% distinct()
+  hwe_aff <- vroom::vroom(path(ukbb_dir,paste0("chr",padded_chr ,".hwe.tsv")), delim = "\t") %>% janitor::clean_names() %>% filter(test == "AFF",snp %in% gwas$snp) %>% mutate(maf = furrr::future_map_dbl(geno, maf_calc)) %>% select(chr, snp, a1, a2, "geno_aff" = geno, "hwe_p_aff" = p, "maf_aff" = maf) %>% distinct()
+  hwe_unaff <- vroom::vroom(path(ukbb_dir,paste0("chr",padded_chr ,".hwe.tsv")), delim = "\t") %>% janitor::clean_names() %>% filter(test == "UNAFF",snp %in% gwas$snp) %>% mutate(maf = furrr::future_map_dbl(geno, maf_calc)) %>% select(chr, snp, a1, a2, "geno_unaff" = geno, "hwe_p_unaff" = p, "maf_unaff" = maf) %>% distinct()
   
+  wide_hwe2 <- left_join(hwe_all, hwe_aff) %>% left_join(hwe_unaff)
   
-  
-  # filter to only have complete data bsaed on gwas and hwe
-  res_wide <- gwas %>% filter(snp %in% wide_hwe$snp) %>% left_join(., wide_hwe, by = c("chr","snp", "a1"))
+  # filter to only have complete data based on gwas and hwe
+  res_wide <- gwas %>% filter(snp %in% wide_hwe2$snp) %>% left_join(., wide_hwe2, by = c("chr","snp", "a1"))
   
   # add on the impute info data
   gwas_hwe_info <- impute_info %>% unite("snp", snp_id, chr_pos_alleles, sep = ",", remove = FALSE) %>% select(-maf, -a1) %>% right_join(res_wide, by = "snp")
@@ -151,35 +167,39 @@ wrangle_gwas_data <- function(chr, studyid, ukbb_dir) {
   # load data into gwas table
   gwas_hwe_info %>% filter(!is.na(or)) %>% 
     mutate(study_id = studyid, neg_log10_p = -log10(p)) %>% 
-    select(kgp_id = chr_pos_alleles, 
+    left_join(marker_table, by = c("snp_id" = "marker_name", "alt" = "alt_marker_table", "ref"="ref_marker_table")) %>% 
+    mutate(kgp_id = ifelse(str_detect(chr_pos_alleles, "(rs)|(Aff)"), kgp_id_marker_table, chr_pos_alleles)) %>% 
+    select(kgp_id,
            study_id, 
            a1, 
            a2, 
            stat = or, 
            se, neg_log10_p,  
            impute_score = info_score, 
-           maf_all = maf_ALL, 
-           maf_unaff = maf_UNAFF, 
-           maf_aff = maf_AFF, 
-           geno_all = geno_ALL, 
-           geno_aff = geno_AFF, 
-           geno_unaff = geno_UNAFF, 
-           hwe_p_all = p_ALL, 
-           hwe_p_aff = p_AFF, 
-           hwe_p_unaff = p_UNAFF ) %>% 
-    write_csv(prefix("db_load",paste0("chr",chr,"_studyid",studyid,"_gwas.csv")))
+           maf_all, 
+           maf_unaff, 
+           maf_aff, 
+           geno_all, 
+           geno_aff, 
+           geno_unaff, 
+           hwe_p_all, 
+           hwe_p_aff, 
+           hwe_p_unaff) %>% 
+    write_csv(path(prefix,"db_load",paste0("chr",chr,"_studyid",studyid,"_gwas.csv")))
     #DBI::dbWriteTable(con, name = "gwas", value = ., append = TRUE)
 }
 
 
 load_gwas_table <- function(chr, studyid) {
+  message(paste0("INSERTING GWAS: chr",chr," studyid ",studyid))
   read_csv(path(prefix,"db_load",paste0("chr",chr,"_studyid",studyid,"_gwas.csv"))) %>% 
   DBI::dbWriteTable(con, name = "gwas", value = ., append = TRUE)
 }
 
 load_qc_table <- function(chr, studyid){
+  message(paste0("INSERTING QC: chr",chr," studyid ",studyid))
   read_csv(path(prefix,"db_load",paste0("chr",chr,"_studyid",studyid,"_qc_removed.csv"))) %>% 
-  DBI::dbWriteTable(con, name = "qc_removed", value = ., append = TRUE)
+  DBI::dbWriteTable(con, name = "no_gwas_result", value = ., append = TRUE)
 }
 
 ```
@@ -187,17 +207,21 @@ load_qc_table <- function(chr, studyid){
 
 Wrangle the data into the table formats
 ```{r}
-crossing(studyid = c(1,2,3), dir = ukbb_dirs)
-map(chrs, wrangle_gwas_data, studyid = 1, ukbb_dir = "test_db/gout")
+
+load_list <- left_join(study_info, ukbb_dirs, by = "name") %>% select(name, id, path) %>% left_join(crossing(name = ukbb_dirs$name, chrs = chrs), by = "name")
+  
+load_list %>%  pmap(., ~wrangle_gwas_data(studyid = ..2, ukbb_dir = ..3 ,chr = ..4))
+
+#map(chrs, wrangle_gwas_data, studyid = 1, ukbb_dir = "test_db/gout")
 ```
 
 load the gwas table with data
-```{r}
+```{r, eval = FALSE}
 map(chrs, load_gwas_table, studyid = 1)
 ```
 
 load the qc table with data
-```{r}
+```{r, eval = FALSE}
 map(chrs, load_qc_table, studyid = 1)
 ```
 
