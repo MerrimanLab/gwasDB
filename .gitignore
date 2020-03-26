@@ -3,3 +3,4 @@
 .RData
 config.yml
 data/*.sqlite
+data/
