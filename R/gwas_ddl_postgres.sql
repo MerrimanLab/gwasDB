@@ -3,7 +3,7 @@
 
 CREATE TABLE IF NOT EXISTS "b37"(
   "kgp_id" TEXT PRIMARY KEY,
-  "chr" TEXT NOT NULL,
+  "chr" integer NOT NULL, --- plink codings ---
   "pos" INTEGER NOT NULL,
   "ref" TEXT,
   "alt" TEXT
@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS "study"(
   "citation" TEXT,
   "url" TEXT,
   "xsan_path" TEXT,
-  "comment" TEXT
+  "comment" TEXT,
+  UNIQUE(id)
 );
 
 
