@@ -9,20 +9,21 @@ library(fs)
 library(vroom)
 library(tidyverse)
 library(dbplyr)
-library(RSQLite)
+#library(RSQLite)
+library(RPostgreSQL)
 library(config)
 library(furrr)
 
 
-plan(multisession)
+plan(multisession(workers = 22))
 ```
 
 
 Set up the db connection
 ```{r connection}
-Sys.setenv(R_CONFIG_ACTIVE = "gwasdb")
+Sys.setenv(R_CONFIG_ACTIVE = "gwasdb_psql_admin")
 conf <- config::get()
-con <- dbConnect(odbc::odbc(),driver = conf$driver, database = conf$database , timeout = 100)
+con <- dbConnect(odbc::odbc(),driver = conf$driver, database = conf$database, servername = conf$server, port = conf$port, UID = conf$user, PWD = conf$password , timeout = 100)
 ```
 
 File locations for ukbb results
@@ -33,20 +34,26 @@ if(file.exists("/Volumes/")){
   prefix <- path("~/data/ukbb500k_gwas/")
 }
 
-ukbb_dirs <- tribble(~ name, ~path,
-  "ukbb_gout",  path(prefix,"source_data", "gout"),
-  "ukbb_gout_male" , path(prefix,"source_data", "gout_male"),
-  "ukbb_gout_female" , path(prefix,"source_data", "gout_female"),
-  "ukbb_gout_hu" , path(prefix,"source_data", "gout_hu"),
-  "ukbb_gout_hu_male" , path(prefix,"source_data", "gout_hu_male"),
-  "ukbb_gout_hu_female" , path(prefix,"source_data", "gout_hu_female")
+make_path <- function(dirs){
+  as.character(path_join(dirs))
+}
+
+ukbb_dirs <- tribble(~name, ~path,
+  "ukbb_gout", make_path(c(prefix,"source_data/", "gout/")),
+  "ukbb_gout_male" , make_path(c(prefix,"source_data", "gout_male")),
+  "ukbb_gout_female" , make_path(c(prefix,"source_data", "gout_female")),
+  "ukbb_gout_hu" , make_path(c(prefix,"source_data", "gout_hu")),
+  "ukbb_gout_hu_male" , make_path(c(prefix,"source_data", "gout_hu_male")),
+  "ukbb_gout_hu_female" , make_path(c(prefix,"source_data", "gout_hu_female"))
 )
+
+
 ```
 
 
 
 ```{r}
-chrs <- 1L:22L
+chrs <- c(1L:22L,"X","XY")
 ```
 
 
@@ -63,9 +70,11 @@ Load markers
 load_markers <- function(chrom) {
   markers <- vroom::vroom(file = path(prefix,"db_load",paste0("marker_ids_chr",chrom,".txt")), col_names = c("kgp_id","snp","chr","pos","ref","alt"))
   # load into b37 table
-  markers %>% select(kgp_id, chr,pos, ref, alt) %>% DBI::dbWriteTable(conn = con, name = "b37", value = ., append = TRUE)
+  markers %>% select(kgp_id, chr,pos, ref, alt) %>% write_csv(path = path(prefix,"db_load", paste0("table_b37_chr", chrom, ".csv")))
+  
+  #%>% DBI::dbWriteTable(conn = con, name = "b37", value = ., append = TRUE)
   # load into marker table
-  markers %>% filter(str_detect(snp, pattern = "[0-9]+:[0-9]+_[A-Z]+_[A-Z]", negate = TRUE)) %>% select(kgp_id, marker_name = snp) %>% distinct() %>% DBI::dbWriteTable(conn = con, name = "marker", value = ., append = TRUE)
+  markers %>% filter(str_detect(snp, pattern = "[0-9]+:[0-9]+_[A-Z]+_[A-Z]", negate = TRUE)) %>% select(kgp_id, marker_name = snp) %>% distinct() %>% write_csv(path = path(prefix,"db_load", paste0("table_marker_",chrom,".csv")))#%>% DBI::dbWriteTable(conn = con, name = "marker", value = ., append = TRUE)
   
 }
 ```
@@ -74,10 +83,56 @@ load_markers <- function(chrom) {
 
 ```{r}
 
-map(chrs, load_markers)
+furrr::future_map(chrs, load_markers)
 #marker_files <- list.files("~/data/ukbb500k_gwas/db_load", pattern = "marker_ids_chr", full.names = TRUE)
 #markers <- map_dfr(marker_files[22], vroom::vroom, col_names = c("kgp_id","snp","chr","pos","ref","alt"))
 ```
+
+
+```{sql, connection =con}
+CREATE TABLE IF NOT EXISTS "tmp_b37"(
+  "kgp_id" TEXT,
+  "chr" TEXT NOT NULL,
+  "pos" INTEGER NOT NULL,
+  "ref" TEXT,
+  "alt" TEXT
+);
+
+CREATE TABLE IF NOT EXISTS "tmp_marker"(
+  "kgp_id" TEXT,
+  "marker_name" TEXT NOT NULL
+);
+```
+
+
+```{r}
+b37_files <- list.files(path = here::here("data","db_load"), pattern = "table_b37_chr", full.names = TRUE)
+purrr::map_dfr(b37_files, vroom, col_types = c("ccncc") ) %>% vroom::vroom_write(path = "/tmp/tmp_b37.csv",delim = ',')
+```
+
+
+```{sql, connection = con}
+copy tmp_b37 from '/tmp/tmp_b37.csv' with DELIMITER ',' CSV HEADER;
+```
+
+```{r}
+marker_files <- list.files(path = here::here("data","db_load"), pattern = "table_marker_", full.names = TRUE)
+purrr::map_dfr(marker_files, vroom, col_types = c("cc") ) %>% vroom::vroom_write(path = "/tmp/tmp_marker.csv"),delim = ',')
+```
+
+
+```{sql, connection = con}
+copy tmp_marker from '/tmp/tmp_marker.csv' with DELIMITER ',' CSV HEADER;
+```
+
+
+
+
+```{sql, connection = con}
+
+```
+
+
 
 ## Load study info
 
@@ -125,7 +180,7 @@ pivot_hwe <- function(chunk, pos){
 }
 
 # load in the marker table from the DB and recreate the ref and alt columns so they can be used for the joins later on
-marker_table <- DBI::dbReadTable(con, "marker") %>% rename("kgp_id_marker_table" = kgp_id) %>% mutate(alt_marker_table = str_extract(kgp_id_marker_table, "_[ACGT]+$") %>% str_remove("_"), ref_marker_table = str_extract(kgp_id_marker_table, "_[ACGT]+_") %>% str_remove_all("_"))
+marker_table <- vroom::vroom(file  = path(prefix,"db_load", paste0("table_marker_",chrom,".csv")), delim = ',') %>% rename("kgp_id_marker_table" = kgp_id) %>% mutate(alt_marker_table = str_extract(kgp_id_marker_table, "_[ACGT]+$") %>% str_remove("_"), ref_marker_table = str_extract(kgp_id_marker_table, "_[ACGT]+_") %>% str_remove_all("_"))
 wrangle_gwas_data <- function(chr, studyid, ukbb_dir) {
   padded_chr <- str_pad(chr, width=2, "left",pad ="0") # tsv files had a padded chr number
 
@@ -165,10 +220,11 @@ wrangle_gwas_data <- function(chr, studyid, ukbb_dir) {
   
   message("Beginning data load in db")
   # load data into gwas table
-  gwas_hwe_info %>% filter(!is.na(or)) %>% 
+  gwas_hwe_info %>% filter(!is.na(or) & remove_snp ==  FALSE) %>% 
     mutate(study_id = studyid, neg_log10_p = -log10(p)) %>% 
     left_join(marker_table, by = c("snp_id" = "marker_name", "alt" = "alt_marker_table", "ref"="ref_marker_table")) %>% 
     mutate(kgp_id = ifelse(str_detect(chr_pos_alleles, "(rs)|(Aff)"), kgp_id_marker_table, chr_pos_alleles)) %>% 
+    mutate(kgp_id = ifelse(str_detect(kgp_id, ','), str_remove_all(kgp_id, ",[0-9]+"), kgp_id)) %>% 
     select(kgp_id,
            study_id, 
            a1, 
