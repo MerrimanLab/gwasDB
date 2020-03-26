@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS "b37"(
 
 
 CREATE TABLE IF NOT EXISTS "marker"(
-  "kgp_id" TEXT PRIMARY KEY,
+  "kgp_id" TEXT NOT NULL,
   "marker_name" TEXT NOT NULL,
   UNIQUE(kgp_id, marker_name),
   FOREIGN KEY ("kgp_id") REFERENCES b37("kgp_id")

@@ -56,6 +56,10 @@ Create marker lists using the mfi files
 ```
 mkdir -p db_load
 for chr in $(seq 1 22); do awk -v chrom=$chr 'OFS="\t" {print chrom":"$3"_"$4"_"$5,$2,chrom,$3,$4,$5}' markers/ukb_mfi_chr${chr}_v3.txt > db_load/marker_ids_chr${chr}.txt ; done
+
+# use plink numbering for chr (X = 23, XY = 25)
+awk 'OFS="\t" {print "X:"$3"_"$4"_"$5,$2,"23",$3,$4,$5}' markers/ukb_mfi_chrX_v3.txt > db_load/marker_ids_chrX.txt
+awk 'OFS="\t" {print "XY:"$3"_"$4"_"$5,$2,"25",$3,$4,$5}' markers/ukb_mfi_chrXY_v3.txt > db_load/marker_ids_chrXY.txt
 ```
 
 Load markers
@@ -66,7 +70,6 @@ load_markers <- function(chrom) {
   markers %>% select(kgp_id, chr,pos, ref, alt) %>% DBI::dbWriteTable(conn = con, name = "b37", value = ., append = TRUE)
   # load into marker table
   markers %>% filter(str_detect(snp, pattern = "[0-9]+:[0-9]+_[A-Z]+_[A-Z]", negate = TRUE)) %>% select(kgp_id, marker_name = snp) %>% distinct() %>% DBI::dbWriteTable(conn = con, name = "marker", value = ., append = TRUE)
-  
 }
 ```
 
