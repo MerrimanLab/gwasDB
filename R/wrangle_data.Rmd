@@ -85,19 +85,18 @@ load_markers <- function(chrom) {
 ```
 
 
-
+Parse the marker tables to create the b37 table csv's. This enable us to read them back in later which should be faster than doing a query to pull in the table.
 ```{r}
-
 furrr::future_map(chrs, load_markers)
 #marker_files <- list.files("~/data/ukbb500k_gwas/db_load", pattern = "marker_ids_chr", full.names = TRUE)
 #markers <- map_dfr(marker_files[22], vroom::vroom, col_names = c("kgp_id","snp","chr","pos","ref","alt"))
 ```
 
-
+Create some temporary tables to speed up the data load
 ```{sql, connection =con}
 CREATE TABLE IF NOT EXISTS "tmp_b37"(
   "kgp_id" TEXT,
-  "chr" TEXT NOT NULL,
+  "chr" INTEGER NOT NULL,
   "pos" INTEGER NOT NULL,
   "ref" TEXT,
   "alt" TEXT
@@ -109,20 +108,41 @@ CREATE TABLE IF NOT EXISTS "tmp_marker"(
 );
 ```
 
-
+Create a single file to load into db for the b37 table
 ```{r}
 b37_files <- list.files(path = here::here("data","db_load"), pattern = "table_b37_chr", full.names = TRUE)
-purrr::map_dfr(b37_files, vroom, col_types = c("ccncc") ) %>% vroom::vroom_write(path = "/tmp/tmp_b37.csv",delim = ',')
+
+
+purrr::map_dfr(b37_files, vroom, col_types = c("cnncc") ) %>% vroom::vroom_write(path = "/tmp/tmp_b37.csv",delim = ',')
 ```
 
 
 ```{sql, connection = con}
 copy tmp_b37 from '/tmp/tmp_b37.csv' with DELIMITER ',' CSV HEADER;
 ```
+```{sql, connection = con}
+select count(*)+1 from tmp_b37;
+```
+
+```{r}
+system("wc -l /tmp/tmp_b37.csv")
+```
+
+```{sql, connection = con}
+select chr, count(*) from tmp_b37 group by chr;
+```
+
+
+
+Delete the temporary file after it has been used
+```{r}
+file.remove("/tmp/tmp_b37.csv")
+```
+
 
 ```{r}
 marker_files <- list.files(path = here::here("data","db_load"), pattern = "table_marker_", full.names = TRUE)
-purrr::map_dfr(marker_files, vroom, col_types = c("cc") ) %>% vroom::vroom_write(path = "/tmp/tmp_marker.csv"),delim = ',')
+purrr::map_dfr(marker_files, vroom, col_types = c("cc") ) %>% vroom::vroom_write(path = path("/tmp/tmp_marker.csv"),delim = ',')
 ```
 
 
@@ -130,11 +150,19 @@ purrr::map_dfr(marker_files, vroom, col_types = c("cc") ) %>% vroom::vroom_write
 copy tmp_marker from '/tmp/tmp_marker.csv' with DELIMITER ',' CSV HEADER;
 ```
 
-
-
+```{r}
+system("wc -l /tmp/tmp_marker.csv")
+```
 
 ```{sql, connection = con}
+select count(*)+1 from tmp_marker;
+```
 
+
+
+Delete the temporay file after it has been used
+```{r}
+file.remove("/tmp/tmp_marker.csv")
 ```
 
 
@@ -185,10 +213,17 @@ pivot_hwe <- function(chunk, pos){
 }
 
 # load in the marker table from the DB and recreate the ref and alt columns so they can be used for the joins later on
+load_marker_table <- function(chrom){
 marker_table <- vroom::vroom(file  = path(prefix,"db_load", paste0("table_marker_",chrom,".csv")), delim = ',') %>% rename("kgp_id_marker_table" = kgp_id) %>% mutate(alt_marker_table = str_extract(kgp_id_marker_table, "_[ACGT]+$") %>% str_remove("_"), ref_marker_table = str_extract(kgp_id_marker_table, "_[ACGT]+_") %>% str_remove_all("_"))
-wrangle_gwas_data <- function(chr, studyid, ukbb_dir) {
-  padded_chr <- str_pad(chr, width=2, "left",pad ="0") # tsv files had a padded chr number
+marker_table
+}
 
+wrangle_gwas_data <- function(chr, studyid, ukbb_dir) {
+  if(!chr %in% c("X","XY")){
+  padded_chr <- str_pad(chr, width=2, "left",pad ="0") # tsv files had a padded chr number
+  }else{
+    padded_chr <- chr
+  }
   message(paste0("wrangling: chr",chr," studyid ",studyid, " dir:",ukbb_dir))
   
   # read gwas
@@ -203,9 +238,9 @@ wrangle_gwas_data <- function(chr, studyid, ukbb_dir) {
   # pivot wide
   #wide_hwe <- read_tsv_chunked(path(ukbb_dir,paste0("chr",padded_chr ,".hwe.tsv")), callback = DataFrameCallback$new(pivot_hwe), chunk_size = 180000, progress = TRUE) 
 
-  hwe_all <- vroom::vroom(path(ukbb_dir,paste0("chr",padded_chr ,".hwe.tsv")), delim = "\t") %>% janitor::clean_names() %>% filter(test == "ALL", snp %in% gwas$snp) %>% mutate(maf = furrr::future_map_dbl(geno, maf_calc)) %>% select(chr, snp, a1, a2, "geno_all" = geno, "hwe_p_all" = p, "maf_all" = maf) %>% distinct()
-  hwe_aff <- vroom::vroom(path(ukbb_dir,paste0("chr",padded_chr ,".hwe.tsv")), delim = "\t") %>% janitor::clean_names() %>% filter(test == "AFF",snp %in% gwas$snp) %>% mutate(maf = furrr::future_map_dbl(geno, maf_calc)) %>% select(chr, snp, a1, a2, "geno_aff" = geno, "hwe_p_aff" = p, "maf_aff" = maf) %>% distinct()
-  hwe_unaff <- vroom::vroom(path(ukbb_dir,paste0("chr",padded_chr ,".hwe.tsv")), delim = "\t") %>% janitor::clean_names() %>% filter(test == "UNAFF",snp %in% gwas$snp) %>% mutate(maf = furrr::future_map_dbl(geno, maf_calc)) %>% select(chr, snp, a1, a2, "geno_unaff" = geno, "hwe_p_unaff" = p, "maf_unaff" = maf) %>% distinct()
+  hwe_all <- vroom::vroom(path(ukbb_dir,paste0(gwas_prefix,"_gwas_chr",padded_chr ,".hwe.tsv")), delim = "\t") %>% janitor::clean_names() %>% filter(test == "ALL", snp %in% gwas$snp) %>% mutate(maf = furrr::future_map_dbl(geno, maf_calc)) %>% select(chr, snp, a1, a2, "geno_all" = geno, "hwe_p_all" = p, "maf_all" = maf) %>% distinct()
+  hwe_aff <- vroom::vroom(path(ukbb_dir,paste0(gwas_prefix,"_gwas_chr",padded_chr ,".hwe.tsv")), delim = "\t") %>% janitor::clean_names() %>% filter(test == "AFF",snp %in% gwas$snp) %>% mutate(maf = furrr::future_map_dbl(geno, maf_calc)) %>% select(chr, snp, a1, a2, "geno_aff" = geno, "hwe_p_aff" = p, "maf_aff" = maf) %>% distinct()
+  hwe_unaff <- vroom::vroom(path(ukbb_dir,paste0(gwas_prefix,"_gwas_chr",padded_chr ,".hwe.tsv")), delim = "\t") %>% janitor::clean_names() %>% filter(test == "UNAFF",snp %in% gwas$snp) %>% mutate(maf = furrr::future_map_dbl(geno, maf_calc)) %>% select(chr, snp, a1, a2, "geno_unaff" = geno, "hwe_p_unaff" = p, "maf_unaff" = maf) %>% distinct()
   
   wide_hwe2 <- left_join(hwe_all, hwe_aff) %>% left_join(hwe_unaff)
   
@@ -224,6 +259,7 @@ wrangle_gwas_data <- function(chr, studyid, ukbb_dir) {
     #DBI::dbWriteTable(con, name = "qc_removed", value = ., append = TRUE)
   
   message("Beginning data load in db")
+  marker_table <- load_marker_table(chr)
   # load data into gwas table
   gwas_hwe_info %>% filter(!is.na(or) & remove_snp ==  FALSE) %>% 
     mutate(study_id = studyid, neg_log10_p = -log10(p)) %>% 
@@ -275,6 +311,87 @@ load_list %>%  pmap(., ~wrangle_gwas_data(studyid = ..2, ukbb_dir = ..3 ,chr = .
 
 #map(chrs, wrangle_gwas_data, studyid = 1, ukbb_dir = "test_db/gout")
 ```
+
+## Load gwas data into db
+
+
+Correct the kgp_id markers in the gwas and no_marker tables
+
+```{bash, eval = FALSE}
+for file in chrXY* ; do sed 's/^X:/XY:/g' ${file} > tmp.csv; mv tmp.csv ${file} ; done
+```
+
+Create a temporary table
+```{sql, connection = con}
+gwasdb=# CREATE UNLOGGED TABLE IF NOT EXISTS "load_gwas"(
+  "kgp_id" TEXT NOT NULL,
+  "study_id" INTEGER NOT NULL,
+  "a1" TEXT NOT NULL,
+  "a2" TEXT,
+  "stat" FLOAT NOT NULL,
+  "se" FLOAT,
+  "neg_log10_p" FLOAT,
+  "impute_score" FLOAT,
+  "maf_all" FLOAT,
+  "maf_aff" FLOAT,
+  "maf_unaff" FLOAT,
+  "geno_all" TEXT,
+  "geno_aff" TEXT,
+  "geno_unaff" TEXT,
+  "hwe_p_all" FLOAT,
+  "hwe_p_aff" FLOAT,
+  "hwe_p_unaff" FLOAT
+);
+
+```
+
+load in each of the gwas results into the tmp table
+```{bash, eval = FALSE}
+for file in chr*rgwas.csv ; do echo "processing ${file}" ; psql -d gwasdb -c "\COPY load_gwas FROM '${file}' WITH DELIMITER ',' CSV HEADER;" ; mv ${file} loaded/ ; done
+```
+
+check that the markers in kgp_id are already in b37
+```{sql, connection = con}
+select *  from (select load_gwas.kgp_id as load_kgp, b37.kgp_id as b37_kgp from load_gwas left join b37 using(kgp_id)) as lj where b37_kgp is NULL;
+```
+
+remove markers that had NA for their kgp_id (only about 145 of them)
+```{sql, connection = con}
+delete from load_gwas where kgp_id = 'NA'
+```
+
+Copy the data into the the actual gwas table
+```{sql, connection = con}
+INSERT INTO gwas (kgp_id, study_id, a1, a2, stat, se, neg_log10_p, impute_score, maf_all, maf_aff, maf_unaff, geno_all, geno_aff, geno_unaff, hwe_p_all, hwe_p_aff, hwe_p_unaff) SELECT kgp_id, study_id, a1, a2, stat, se, neg_log10_p, impute_score, maf_all, maf_aff, maf_unaff, geno_all, geno_aff, geno_unaff, hwe_p_all, hwe_p_aff, hwe_p_unaff FROM load_gwas;
+```
+
+
+
+load qc
+```{bash, eval = FALSE}
+for file in chr*removed.csv ; do echo "processing ${file}" ; psql -d gwasdb -c "\COPY tmp_no_marker FROM '${file}' WITH DELIMITER ',' CSV HEADER;" ; mv ${file} loaded/ ; done
+```
+
+```{sql, connection = con}
+insert into no_gwas_result (kgp_id, study_id) select load_kgp, study_id from (select *  from (select tmp_no_marker.kgp_id as load_kgp, b37.kgp_id as b37_kgp , study_id from tmp_no_marker left join b37 using(kgp_id)) as lj where b37_kgp is not NULL) as tmp ;
+```
+
+
+```{sql, connection = con}
+insert into no_gwas_result (kgp_id, study_id) select distinct marker.kgp_id, study_id from (select *  from tmp_no_marker left join b37 using(kgp_id)  where b37.kgp_id is NULL) as tmp left join ma
+rker on tmp.kgp_id = marker.marker_name where marker.kgp_id is not NULL;
+```
+
+for some reason Affx-80237808 wasn't loaded in so have manually added it.
+```{sql, connection = con}
+insert into marker (kgp_id, marker_name) values ('9:131271296_C_T', 'Affx-80237808')
+```
+
+```{sql, connection=con}
+insert into no_gwas_result (kgp_id, study_id) values ('9:131271296_C_T', 6)
+```
+
+
 
 load the gwas table with data
 ```{r, eval = FALSE}
