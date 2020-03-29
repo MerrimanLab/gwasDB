@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS "b37"(
   "alt" TEXT
 );
 
-
+--- lists all the marker names and their 1KGP id ---
 CREATE TABLE IF NOT EXISTS "marker"(
   "kgp_id" TEXT NOT NULL,
   "marker_name" TEXT NOT NULL,
