@@ -122,7 +122,7 @@ copy tmp_b37 from '/tmp/tmp_b37.csv' with DELIMITER ',' CSV HEADER;
 
 ```{r}
 marker_files <- list.files(path = here::here("data","db_load"), pattern = "table_marker_", full.names = TRUE)
-purrr::map_dfr(marker_files, vroom, col_types = c("cc") ) %>% vroom::vroom_write(path = "/tmp/tmp_marker.csv"),delim = ',')
+purrr::map_dfr(marker_files, vroom, col_types = c("cc") ) %>% vroom::vroom_write(path = path("/tmp/tmp_marker.csv"),delim = ',')
 ```
 
 
