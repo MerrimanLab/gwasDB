@@ -23,6 +23,8 @@ onStop(function() {
     dbDisconnect(con)
 })
 
+
+
 # Define UI for application that draws a histogram
 ui <- fluidPage(
 
@@ -38,7 +40,9 @@ ui <- fluidPage(
             numericInput("marker_chr", value = 1, label = "Chr", width = 150),
             numericInput("marker_start", value = 1, min = 1, label = "Start"),
             numericInput("marker_end", value = 1e5, min = 1, label = "End"),
-            hr()
+            hr(),
+            h3("Plot Options"),
+            radioButtons("facet_options", label = "Facet By", choices = list(None = "none", Ancestry = "ancestry", Sex = "sex"))
         ),
 
         # Show a plot of the generated distribution
@@ -101,7 +105,7 @@ server <- function(input, output) {
 
     combined_tbl <- tbl(con, "combined")
     # filter the data to be supplied for plotting
-    filtered_data <- reactive({
+    highlight_data <- reactive({
         marker_tbl <- markers_table_pos_or_probe()
 
         # initially set marker to be *something*
@@ -110,12 +114,13 @@ server <- function(input, output) {
             # if the marker table has been clicked, set the marker to be the marker name that was clicked
             if(colnames(marker_tbl)[input$markers_cell_clicked$col +1 ] == "kgp_id"){
                 marker <- input$markers_cell_clicked$value
+                print(marker)
             }
         }
 
         # pull out the position information about the marker to use for filtering
         marker_detail <- marker_tbl %>% filter(kgp_id == marker) %>% collect()
-        out_dat <- combined_tbl %>% filter(chr == !!marker_detail$chr, between(pos, !!marker_detail$pos- 10000, !!marker_detail+10000)) %>% collect()
+        out_dat <- combined_tbl %>% filter(chr == !!marker_detail$chr[1], between(pos, (!!marker_detail$pos[1] - 10000), (!!marker_detail$pos[1]+10000))) %>% collect()
 
         out_dat
     })
@@ -124,7 +129,7 @@ server <- function(input, output) {
 
     # Plot of the intensities for the chosen marker
     output$intensityPlot <- renderPlot({
-        dat <- filtered_data()
+        dat <- tbl(con, "combined") %>% filter(chr == !!input$marker_chr, between(pos, !!input$marker_start, !!input$marker_end)) %>% collect()
 
         if(NROW(dat) == 0){
             return(NULL)
@@ -134,12 +139,12 @@ server <- function(input, output) {
             dat <- dat %>% filter(study %in% !!input$study_id)
         }
         selected_colour <- input$colour_options
-        plot_title <- dat[["kgp_id"]][1]
+        plot_title <- paste0("chr",input$marker_chr,":",input$marker_start,"-", input$marker_end)
 
         # coordinate plotting options
-        p <- dat  %>% ggplot(aes(x = pos, y = neg_log10_p))
+        p <- dat  %>% ggplot(aes(x = pos, y = neg_log10_p)) + geom_point()
 
-        # facetting
+        # faceting
         if(input$facet_options == "none"){
             p <- p + facet_wrap(~ study_id)
         } else {
