@@ -1,0 +1,145 @@
+After having loaded the data into SQLite (due to prototyping there) export the data out in the tidy form ready for bulk loading
+
+```{bash}
+sqlite3 gwasdb.sqlite -header -csv -separator ',' 'select * from study;' > postgres_study_table.csv
+sqlite3 gwasdb.sqlite -header -csv -separator ',' 'select * from b37;' > postgres_b37_table.csv
+# the chr column for some reason had added a demical to the chr numbers so we're removing it here
+cat postgres_b37_table.csv | sed 's/,\([0-9]\+\).0,/,\1,/g' > postgres_b37_altered_table.csv
+sqlite3 gwasdb.sqlite -header -csv -separator ',' 'select * from marker;' > postgres_marker_table.csv
+
+cat chr*gwas* | grep -v '^kgp_id' | cat <(head -1 chr1_studyid1_gwas.csv ) - > postgres_gwas_table.csv
+```
+
+Create the final tables
+```{sql}
+CREATE TABLE IF NOT EXISTS "study"(
+  "id" SERIAL PRIMARY KEY,
+  "name" TEXT NOT NULL,
+  "ancestry" TEXT NOT NULL,
+  "model_formula" TEXT,
+  "gwas_date" DATE,
+  "n" INTEGER,
+  "n_case" INTEGER,
+  "n_control" INTEGER,
+  "imputed" BOOLEAN,
+  "impute_ref_panel" TEXT,
+  "summary_only" BOOLEAN,
+  "citation" TEXT,
+  "url" TEXT,
+  "xsan_path" TEXT,
+  "comment" TEXT
+);
+
+CREATE TABLE IF NOT EXISTS "b37"(
+  "kgp_id" TEXT PRIMARY KEY,
+  "chr" TEXT NOT NULL,
+  "pos" INTEGER NOT NULL,
+  "ref" TEXT,
+  "alt" TEXT
+);
+
+CREATE TABLE IF NOT EXISTS "marker"(
+  "kgp_id" TEXT,
+  "marker_name" TEXT NOT NULL,
+);
+
+CREATE TABLE IF NOT EXISTS "gwas"(
+  "kgp_id" TEXT NOT NULL,
+  "study_id" INTEGER NOT NULL,
+  "a1" TEXT NOT NULL,
+  "a2" TEXT,
+  "stat" FLOAT NOT NULL,
+  "se" FLOAT,
+  "neg_log10_p" FLOAT,
+  "imputed_tf" BOOLEAN,
+  "impute_score" FLOAT,
+  "maf_all" FLOAT,
+  "maf_aff" FLOAT,
+  "maf_unaff" FLOAT,
+  "geno_all" TEXT,
+  "geno_aff" TEXT,
+  "geno_unaff" TEXT,
+  "hwe_p_all" FLOAT,
+  "hwe_p_aff" FLOAT,
+  "hwe_p_unaff" FLOAT,
+  PRIMARY KEY (kgp_id, study_id),
+  FOREIGN KEY ("kgp_id") REFERENCES b37("kgp_id"),
+  FOREIGN KEY ("study_id") REFERENCES study("id")
+);
+
+```
+
+
+```{bash}
+psql -d gwasdb -c "copy study from '/tmp/postgres_study_table.csv' with DELIMITER ',' CSV HEADER;"
+psql -d gwasdb -c "copy b37 from '/tmp/postgres_b37_altered_table.csv' with DELIMITER ',' CSV HEADER;"
+psql -d gwasdb -c "copy marker from '/tmp/postgres_marker_table.csv' with DELIMITER ',' CSV HEADER;"
+```
+
+```{sql}
+alter table marker add constraint "marker_kgp_id_marker_name_key" UNIQUE (kgp_id, marker_name);
+alter table marker add constraint "marker_kgp_id_fkey" FOREIGN KEY (kgp_id) REFERENCES b37(kgp_id);
+```
+
+create a temporary table to bulk load the data into
+```{sql}
+CREATE UNLOGGED TABLE IF NOT EXISTS "load_gwas"(
+  "kgp_id" TEXT NOT NULL,
+  "study_id" INTEGER NOT NULL,
+  "a1" TEXT NOT NULL,
+  "a2" TEXT,
+  "stat" FLOAT NOT NULL,
+  "se" FLOAT,
+  "neg_log10_p" FLOAT,
+  "impute_score" FLOAT,
+  "maf_all" FLOAT,
+  "maf_aff" FLOAT,
+  "maf_unaff" FLOAT,
+  "geno_all" TEXT,
+  "geno_aff" TEXT,
+  "geno_unaff" TEXT,
+  "hwe_p_all" FLOAT,
+  "hwe_p_aff" FLOAT,
+  "hwe_p_unaff" FLOAT
+);
+```
+
+```{bash}
+psql -d gwasdb -c "copy load_gwas from '/tmp/postgres_gwas_table.csv' with DELIMITER ',' CSV HEADER;"
+```
+
+Now copy it over into the proper table.
+```{sql}
+--- remove the markers that have the "kgp_id,chr" to be just "kgp_id"
+UPDATE load_gwas SET kgp_id = SUBSTR(kgp_id, 1, POSITION( ',' IN kgp_id)-1)  where kgp_id like '%,%' ;
+
+INSERT INTO gwas (kgp_id, study_id, a1, a2, stat, se, neg_log10_p, impute_score, maf_all, maf_aff, maf_unaff, geno_all, geno_aff, geno_unaff, hwe_p_all, hwe_p_aff, hwe_p_unaff) SELECT kgp_id, study_id, a1, a2, stat, se, neg_log10_p, impute_score, maf_all, maf_aff, maf_unaff, geno_all, geno_aff, geno_unaff, hwe_p_all, hwe_p_aff, hwe_p_unaff FROM load_gwas;
+
+```
+
+
+Create a new read only user
+
+Ref: https://tableplus.com/blog/2018/04/postgresql-how-to-create-read-only-user.html
+```{sql}
+CREATE USER gwas_ro with PASSWORD 'password'; --- password is different ---
+GRANT CONNECT ON DATABASE gwasdb TO gwas_ro;
+GRANT USAGE ON SCHEMA public TO gwas_ro;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO gwas_ro;
+```
+
+Change connection settings in:
+
+/etc/postgresql/10/main/postgresql.conf:
+listen_addresses: '*'
+
+/etc/postgresql/10/main/pg_hba.conf:
+local all postgres peer
+local gwasdb gwas_ro md5
+host gwasdb gwas_ro 0.0.0.0/0 md5
+
+then restart the db
+```{bash}
+sudo pg_ctlcluster 10 main restart
+```
+
