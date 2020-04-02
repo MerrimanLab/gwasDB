@@ -59,7 +59,8 @@ ui <- fluidPage(
                          label = "Facet By",
                          choices = list(None = "none",
                                         Ancestry = "ancestry",
-                                        Sex = "sex"))
+                                        Sex = "sex")),
+            selectInput("gwas_study", label = "Gwas Study", choices = study_tbl$name, selected = NULL, multiple = TRUE)
         ),
 
         # Show a plot of the generated distribution
@@ -164,12 +165,15 @@ server <- function(input, output) {
                    between(pos, !!input$marker_start, !!input$marker_end)) %>%
             collect()
 
+        # match up selected studies
+        selected_study_ids <- study_tbl %>% filter(name %in% input$gwas_study) %>% pull(id)
+
         if (NROW(dat) == 0) {
             return(NULL)
         }
 
-        if (!is.null(input$study)) {
-            dat <- dat %>% filter(study %in% !!input$study_id)
+        if (!is.null(input$gwas_study)) {
+            dat <- dat %>% filter(name %in% !!input$gwas_study)
         }
         selected_colour <- input$colour_options
         plot_title <- paste0("chr", input$marker_chr, ":", input$marker_start, "-", input$marker_end)
@@ -179,9 +183,9 @@ server <- function(input, output) {
 
         # faceting
         if (input$facet_options == "none") {
-            p <- p + facet_wrap(~ study_id)
+            p <- p + facet_wrap(~ name)
         } else {
-            facet <- paste0(input$facet_options, "~ study_id")
+            facet <- paste0(input$facet_options, "~ name")
             p <- p + facet_grid(facet)
         }
 
