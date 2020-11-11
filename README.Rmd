@@ -14,7 +14,7 @@ knitr::opts_chunk$set(
 # gwasDB
 
 Required libraries
-```{r}
+```{r, eval = FALSE}
 library(tidyverse)
 library(dbplyr)
 library(RPostgreSQL)
@@ -38,7 +38,7 @@ gwasdb_ro:
 
 ## Accessing
 
-```{r connection}
+```{r connection, eval = FALSE}
 Sys.setenv(R_CONFIG_ACTIVE = "gwasdb_ro")
 conf <- config::get(file = here::here("config.yml"))
 con <- dbConnect(odbc::odbc(),driver = conf$driver, database = conf$database, servername = conf$server, port = conf$port, UID = conf$user, PWD = conf$password , timeout = 100)
