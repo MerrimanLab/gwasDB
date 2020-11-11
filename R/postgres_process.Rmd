@@ -102,6 +102,11 @@ CREATE UNLOGGED TABLE IF NOT EXISTS "load_gwas"(
   "hwe_p_aff" FLOAT,
   "hwe_p_unaff" FLOAT
 );
+
+CREATE UNLOGGED TABLE IF NOT EXISTS "tmp_no_marker"(
+ "kgp_id" TEXT NOT NULL,
+  "study_id" INTEGER NOT NULL,
+);
 ```
 
 ```{bash}
@@ -127,6 +132,12 @@ GRANT CONNECT ON DATABASE gwasdb TO gwas_ro;
 GRANT USAGE ON SCHEMA public TO gwas_ro;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO gwas_ro;
 ```
+
+```{sql, con}
+CREATE VIEW ukbb_gwas_results_export AS SELECT kgp_id, chr, pos, ref, alt, a1, a2, stat as or, se, neg_log10_p, maf_all, maf_aff, maf_unaff, geno_all, geno_aff, geno_unaff, hwe_p_all, hwe_p_aff, hwe_p_unaff, impute_score, study_reduced.*  FROM gwas LEFT JOIN b37 USING(kgp_id) LEFT JOIN (SELECT id as study_id, name, n, n_case, n_control FROM study) as study_reduced USING(study_id) where impute_score >= 0.3;
+```
+
+
 
 Change connection settings in:
 
