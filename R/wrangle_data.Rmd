@@ -347,7 +347,7 @@ gwasdb=# CREATE UNLOGGED TABLE IF NOT EXISTS "load_gwas"(
 
 load in each of the gwas results into the tmp table
 ```{bash, eval = FALSE}
-for file in chr*rgwas.csv ; do echo "processing ${file}" ; psql -d gwasdb -c "\COPY load_gwas FROM '${file}' WITH DELIMITER ',' CSV HEADER;" ; mv ${file} loaded/ ; done
+for file in chr*gwas.csv ; do echo "processing ${file}" ; psql -d gwasdb -c "\COPY load_gwas FROM '${file}' WITH DELIMITER ',' CSV HEADER;" ; mv ${file} loaded/ ; done
 ```
 
 check that the markers in kgp_id are already in b37
