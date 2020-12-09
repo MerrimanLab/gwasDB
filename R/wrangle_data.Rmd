@@ -378,8 +378,7 @@ insert into no_gwas_result (kgp_id, study_id) select load_kgp, study_id from (se
 
 
 ```{sql, connection = con}
-insert into no_gwas_result (kgp_id, study_id) select distinct marker.kgp_id, study_id from (select *  from tmp_no_marker left join b37 using(kgp_id)  where b37.kgp_id is NULL) as tmp left join ma
-rker on tmp.kgp_id = marker.marker_name where marker.kgp_id is not NULL;
+insert into no_gwas_result (kgp_id, study_id) select distinct marker.kgp_id, study_id from (select *  from tmp_no_marker left join b37 using(kgp_id)  where b37.kgp_id is NULL) as tmp left join marker on tmp.kgp_id = marker.marker_name where marker.kgp_id is not NULL;
 ```
 
 for some reason Affx-80237808 wasn't loaded in so have manually added it.

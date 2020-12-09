@@ -15,7 +15,7 @@ library(vroom)
 library(tidyverse)
 library(dbplyr)
 #library(RSQLite)
-library(RPostgreSQL)
+#library(RPostgreSQL)
 library(odbc)
 library(config)
 library(furrr)
@@ -113,8 +113,8 @@ marker_table
 }
 
 wrangle_gwas_data <- function(chr, studyid, ukbb_dir) {
-  if(!chr %in% c("X","XY")){
-  padded_chr <- str_pad(chr, width=2, "left",pad ="0") # tsv files had a padded chr number
+  if (!chr %in% c("X","XY")) {
+  padded_chr <- str_pad(chr, width = 2, "left", pad = "0") # tsv files had a padded chr number
   }else{
     padded_chr <- chr
   }
@@ -125,7 +125,7 @@ wrangle_gwas_data <- function(chr, studyid, ukbb_dir) {
   gwas <- read_tsv(path(ukbb_dir,paste0(gwas_prefix,"_gwas_chr", padded_chr,"_add_unfiltered_p.tsv"))) %>% janitor::clean_names()
 
   # read impute marker info
-  impute_info <- vroom::vroom(path(prefix,"markers",paste0("ukb_mfi_chr",chr,"_v3.txt")), col_names = c("chr_pos_alleles","snp_id", "position", "ref","alt","maf", "a1","info_score")) %>% mutate(remove_snp = ifelse(info_score < 0.3, TRUE, FALSE))
+  impute_info <- vroom::vroom(path(prefix,"markers",paste0("ukb_mfi_chr",chr,"_v3.txt")), col_names = c("chr_pos_alleles","snp_id", "position", "ref","alt","maf", "a1","info_score")) %>% mutate(remove_snp = ifelse(info_score < 0.3, TRUE, FALSE)) %>% mutate(chr_pos_alleles = ifelse(str_detect(chr_pos_alleles, "rs"), glue::glue("{chr}:{position}_{ref}_{alt}"), chr_pos_alleles))
 
   # read hwe info
   message("pivoting")
@@ -175,23 +175,23 @@ wrangle_gwas_data <- function(chr, studyid, ukbb_dir) {
            geno_unaff,
            hwe_p_all,
            hwe_p_aff,
-           hwe_p_unaff) %>%
-    write_csv(path(prefix,"db_load",paste0("chr",chr,"_studyid",studyid,"_gwas.csv")))
+           hwe_p_unaff) %>% 
+     write_csv(path(prefix,"db_load",paste0("chr",chr,"_studyid",studyid,"_gwas.csv")))
     #DBI::dbWriteTable(con, name = "gwas", value = ., append = TRUE)
 }
 
 
-load_gwas_table <- function(chr, studyid) {
-  message(paste0("INSERTING GWAS: chr",chr," studyid ",studyid))
-  read_csv(path(prefix,"db_load",paste0("chr",chr,"_studyid",studyid,"_gwas.csv"))) %>%
-  DBI::dbWriteTable(con, name = "gwas", value = ., append = TRUE)
-}
-
-load_qc_table <- function(chr, studyid){
-  message(paste0("INSERTING QC: chr",chr," studyid ",studyid))
-  read_csv(path(prefix,"db_load",paste0("chr",chr,"_studyid",studyid,"_qc_removed.csv"))) %>%
-  DBI::dbWriteTable(con, name = "no_gwas_result", value = ., append = TRUE)
-}
+# load_gwas_table <- function(chr, studyid) {
+#   message(paste0("INSERTING GWAS: chr",chr," studyid ",studyid))
+#   read_csv(path(prefix,"db_load",paste0("chr",chr,"_studyid",studyid,"_gwas.csv"))) %>%
+#   DBI::dbWriteTable(con, name = "gwas", value = ., append = TRUE)
+# }
+# 
+# load_qc_table <- function(chr, studyid){
+#   message(paste0("INSERTING QC: chr",chr," studyid ",studyid))
+#   read_csv(path(prefix,"db_load",paste0("chr",chr,"_studyid",studyid,"_qc_removed.csv"))) %>%
+#   DBI::dbWriteTable(con, name = "no_gwas_result", value = ., append = TRUE)
+# }
 
 ```
 
@@ -241,10 +241,10 @@ gwasdb=# CREATE UNLOGGED TABLE IF NOT EXISTS "load_gwas"(
 
 load in each of the gwas results into the tmp table
 ```{bash, eval = FALSE}
-for file in chr*gwas.csv ; do sed 's/NA/NULL/g' ${file} > tmp.csv; mv tmp.csv ${file} ; done
+for file in chr*gwas.csv ; do sed 's/NA/NULL/g' ${file} | grep -v '^NULL' > tmp.csv; mv tmp.csv ${file} ; done
 
 
-for file in chr*gwas.csv ; do echo "processing ${file}" ; psql -d gwasdb -c "\COPY load_gwas FROM '${file}' WITH DELIMITER ',' NULL AS 'NA' CSV HEADER;" ; mv ${file} loaded/ ; done
+for file in chr*gwas.csv ; do echo "processing ${file}" ; psql -d gwasdb -c "\COPY load_gwas FROM '${file}' WITH DELIMITER ',' NULL AS 'NULL' CSV HEADER;" ; mv ${file} loaded/ ; done
 ```
 
 check that the markers in kgp_id are already in b37
@@ -289,16 +289,6 @@ insert into no_gwas_result (kgp_id, study_id) values ('9:131271296_C_T', 6)
 ```
 
 
-
-load the gwas table with data
-```{r, eval = FALSE}
-map(chrs, load_gwas_table, studyid = 1)
-```
-
-load the qc table with data
-```{r, eval = FALSE}
-map(chrs, load_qc_table, studyid = 1)
-```
 
 
 ### Dev commands
